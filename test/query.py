@@ -100,7 +100,8 @@ def cal_avg_recall(results, ground_truth, k, max_vid):
 
                 if((gt_vid+1) in query_vid):
                     match_num += 1
-        recall = match_num / min(k, compare_num) 
+        recall = match_num / min(k, compare_num)
+        # print(f"[INFO] recall: {recall}, ground_truth_of_query_idx: {ground_truth_of_query_idx[:k]}, query_vid: {query_vid}")
         avg_recall += recall
 
     avg_recall = avg_recall / query_num

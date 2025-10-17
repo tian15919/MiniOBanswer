@@ -55,4 +55,7 @@
 *   `test/`本地自测目录，选手可以进入该目录进行本地测试
     
 
-## 注意事项
+## 相关资料
+*   [PGVector 的背景、原理、使用方法 - 云原生数据库 PolarDB - 阿里云帮助中心](https://help.aliyun.com/zh/polardb/polardb-for-postgresql/pgvector)
+
+*   [pgvector 插件简单使用 - 云原生数据库 PolarDB - 阿里云帮助中心](https://help.aliyun.com/zh/polardb/polardb-for-postgresql/getting-started-pgvector)

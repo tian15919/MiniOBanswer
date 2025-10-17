@@ -22,21 +22,21 @@
 2.  下载数据集
     
     ```bash
-    # 以下为 500 MB 以下的数据集，适合于本地运行
+    # 以下为 500 MB 以下的数据集，适合于本地运行，注意在测试时选择正确的距离操作符
     # 可以使用 wget http://ann-benchmarks.com/{dataset_name}.hdf5 的方式拉取数据
-    "fashion-mnist-784-euclidean": 217 MB, 784 x 60,000
-    "mnist-784-euclidean": 217 MB, 784 x 60,000
-    "glove-25-angular": 121 MB, 25 x 1,183,514	
-    "glove-50-angular": 235 MB, 50 x 1,183,514	
-    "glove-100-angular": 463 MB, 100 x 1,183,514
-    "sift-128-euclidean": 501 MB, 128 x 1,000,000
-    "nytimes-256-angular": 301 MB, 256 x 290,000
-    "nytimes-16-angular": 26 MB, 16 x 290,000
-    "lastfm-64-dot": 135 MB, 65 x 292,385
+    "fashion-mnist-784-euclidean": 217 MB, 784 x 60,000, Euclidean (L2)
+    "mnist-784-euclidean": 217 MB, 784 x 60,000, Euclidean (L2)
+    "glove-25-angular": 121 MB, 25 x 1,183,514, Angular (Cosine)
+    "glove-50-angular": 235 MB, 50 x 1,183,514, Angular (Cosine)
+    "glove-100-angular": 463 MB, 100 x 1,183,514, Angular (Cosine)
+    "sift-128-euclidean": 501 MB, 128 x 1,000,000, Euclidean (L2)
+    "nytimes-256-angular": 301 MB, 256 x 290,000, Angular (Cosine)
+    "nytimes-16-angular": 26 MB, 16 x 290,000, Angular (Cosine)
+    "lastfm-64-dot": 135 MB, 65 x 292,385, Angular (Cosine)
     
     # 使用 wget https://github.com/fabiocarrara/str-encoders/releases/download/v0.1.3/{dataset_name}.hdf5 的方式拉取数据
-    "coco-i2i-512-angular": 136 MB, 512 x 113,287
-    "coco-t2i-512-angular": 136 MB, 512 x 113,287
+    "coco-i2i-512-angular": 136 MB, 512 x 113,287, Angular (Cosine)
+    "coco-t2i-512-angular": 136 MB, 512 x 113,287, Angular (Cosine)
     ```
     *   推荐使用 [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) 中提供的数据数据集
         
@@ -55,25 +55,29 @@
         *   [定制开发环境 | PolarDB for PostgreSQL](https://apsaradb.github.io/PolarDB-for-PostgreSQL/zh/development/customize-dev-env.html)
             
         *   Dockerfile：[ApsaraDB/polardb-pg-docker-images](https://github.com/ApsaraDB/polardb-pg-docker-images)
-            
+
     *   想直接在 Linux 中开发可以参考 Dockerfile：[ApsaraDB/polardb-pg-docker-images](https://github.com/ApsaraDB/polardb-pg-docker-images) 中的依赖
         
 
 1.  创建并运行容器
-    
 
-```bash
-# 设置共享内存大小, 需要大于maintenance_work_mem
-SHM_SIZE=8g
-# 进入项目根目录后运行容器
-docker run -it -p 5432:5432 \
-    -v $PWD:/home/postgres/polardb_competition_2025 \
-    --shm-size=$SHM_SIZE \
-    --name polardb_competition_2025_devel \
-    --cap-add=SYS_PTRACE --privileged=true \
-    registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_devel:ubuntu24.04 \
-    bash
-```
+    ```bash
+    # 设置共享内存大小, 需要大于maintenance_work_mem
+    SHM_SIZE=8g
+    # 进入项目根目录后运行容器
+    docker run -it -p 5432:5432 \
+        -v $PWD:/home/postgres/polardb_competition_2025 \
+        --shm-size=$SHM_SIZE \
+        --name polardb_competition_2025_devel \
+        --cap-add=SYS_PTRACE --privileged=true \
+        registry.cn-hangzhou.aliyuncs.com/polardb_pg/polardb_pg_devel:ubuntu24.04 \
+        bash
+    
+    # 设置目录权限, 避免无法运行
+    cd polardb_competition_2025
+    sudo chmod -R a+wr ./
+    sudo chown -R postgres:postgres ./
+    ```
 
 ## 编译并配置数据库
 
@@ -93,36 +97,35 @@ docker run -it -p 5432:5432 \
         
     *   polar\_xlog\_queue\_buffers 应该设置为 shared\_buffers 的 1/8，如果不设置可能无法启动
         
-    *   maintenance\_work\_mem 为索引构建使用的缓存大小
+    *   maintenance\_work\_mem 为索引构建使用的缓存大小，该值应该大于索引大小，以加快索引构建
         
     *   max\_parallel\_workers 控制最大并发度
         
     *   max\_parallel\_maintenance\_workers 控制索引构建的最大并发度，该值不能大于 max\_parallel\_workers
         
+    ```bash
+    # PolarDB 安装目录
+    BASE_DIR="$HOME"
 
-```bash
-# PolarDB 安装目录
-BASE_DIR="$HOME"
+    # PolarDB DATA/BIN 目录
+    PGDATA="$BASE_DIR/tmp_polardb_pg_15_primary"
+    CONFIG_FILE="$PGDATA/postgresql.conf"
 
-# PolarDB DATA/BIN 目录
-PGDATA="$BASE_DIR/tmp_polardb_pg_15_primary"
-CONFIG_FILE="$PGDATA/postgresql.conf"
+    # 设置参数
+    cat >> "$CONFIG_FILE" << EOF
 
-# 设置参数
-cat >> "$CONFIG_FILE" << EOF
+    shared_buffers = 16GB
+    polar_xlog_queue_buffers = 2GB
+    maintenance_work_mem = 8GB
+    max_parallel_maintenance_workers = 16
+    max_parallel_workers = 16
 
-shared_buffers = 16GB
-polar_xlog_queue_buffers = 2GB
-maintenance_work_mem = 8GB
-max_parallel_maintenance_workers = 16
-max_parallel_workers = 16
+    EOF
 
-EOF
-
-# => 重启数据库
-export PATH="$BASE_DIR/tmp_polardb_pg_15_base/bin:$PATH"
-pg_ctl -D "$PGDATA" restart
-```
+    # => 重启数据库
+    export PATH="$BASE_DIR/tmp_polardb_pg_15_base/bin:$PATH"
+    pg_ctl -D "$PGDATA" restart
+    ```
 
 ## 插入数据并建立索引
 
@@ -156,40 +159,43 @@ pg_ctl -D "$PGDATA" restart
     ```
     
 2.  插入数据
+
+    ```bash
+    USER="testuser"
+    PASSWORD="testPawword"
+    DBNAME="testdb"
+    DATASET_NAME=
+
+    # cd $BASE_DIR/test && source pg-venv/bin/activate
+    python3 load.py \
+    --host 127.0.0.1 \
+    --port 5432 \
+    --database $DBNAME \
+    --user $USER \
+    --password $PASSWORD \
+    --filename "${DATASET_NAME}.hdf5" \
+    --tablename vector_table \
+    --batch_size 1000 \
+    --num_workers 8
+    ```
+
+3.  建立索引
+
+    *   当前支持两种类型的索引，分别是 IVFFLAT 和 HNSW
+
+    *   需要注意创建向量索引使用的操作符类型，如果使用的向量索引操作符类型与查询搜索时使用的类型不匹配，查找时将无法利用索引加速，当前主要使用 vector_l2_ops(<->)/vector_cosine_ops(<=>)/vector_ip_ops(<#>) 这三种操作符
     
+    ```sql
+    -- 创建 HNSW 索引
+    CREATE INDEX ON vector_table 
+    USING hnsw (embedding vector_l2_ops) 
+    WITH (m = 16, ef_construction = 64);
 
-```bash
-nytimes-16-angularUSER="testuser"
-PASSWORD="testPawword"
-DBNAME="testdb"
-DATASET_NAME=
-
-python3 load.py \
-  --host 127.0.0.1 \
-  --port 5432 \
-  --database $DBNAME \
-  --user $USER \
-  --password $PASSWORD \
-  --filename "${DATASET_NAME}.hdf5" \
-  --tablename vector_table \
-  --batch_size 1000 \
-  --num_workers 8
-```
-
-1.  建立索引
-    
-
-```sql
--- 创建 HNSW 索引
-CREATE INDEX ON vector_table 
-USING hnsw (embedding vector_l2_ops) 
-WITH (m = 16, ef_construction = 64);
-
--- 创建 IVFFLAT 索引
-CREATE INDEX ON vector_table
-USING ivfflat (embedding vector_l2_ops)
-WITH (lists = 2000);
-```
+    -- 创建 IVFFLAT 索引
+    CREATE INDEX ON vector_table
+    USING ivfflat (embedding vector_l2_ops)
+    WITH (lists = 2000);
+    ```
 
 ## 运行基准测试
 
@@ -234,7 +240,7 @@ usage: query.py
 
 *   `--k`: 指定返回最近邻的数量，默认为 10
     
-*   `--metric`: 指定距离度量方式，可选'l2'(欧氏距离)、'cosine'(余弦距离)、'inner'(内积)，默认为'l2'
+*   `--metric`: 指定距离度量方式，可选'l2'(欧氏距离 <->)、'cosine'(余弦距离 <=>)、'inner'(内积 <#>)，默认为'l2'，**在进行测试时，应该按照数据集要求选择距离度量方式，避免 Recall 计算异常**
     
 *   `--max_vid`: 最大向量 ID 限制，用于计算召回率时过滤超出范围的向量 ID（通常应该 > 向量总数）
     
