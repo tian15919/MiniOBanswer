@@ -1,22 +1,22 @@
 ![plot](./img/banner.png)
 
-# Tianchi x PolarDB: Tuning PostgreSQL pgvector
+# Tianchi x PolarDB: Tuning PostgreSQL pgvector
 
-本次比赛的目的是优化 PolarDB-for-PostgreSQL pgvector 插件，以获取更高的向量索引构建与向量查询性能。
+本次比赛的目的是优化 PolarDB-for-PostgreSQL pgvector 插件，以获取更高的向量索引构建与向量查询性能。
 
 ## 测评流程
 
-1.  进入竞赛仓库，点击 Fork 按键，Fork 竞赛仓库
+1.  进入竞赛仓库，点击 Fork 按键，Fork 竞赛仓库
     
 ![plot](./img/fork-001.png)
     
-2.  进入 Fork 仓库，将仓库权限设置为 **私有**，赛事结束前禁止公开参赛代码
+2.  进入 Fork 仓库，将仓库权限设置为 **私有**，赛事结束前禁止公开参赛代码
     
 ![plot](./img/fork-002.png)
 
 ![plot](./img/fork-003.png)
     
-3.  将 polardb-tianchi (polardbtianchi) 用户添加为参赛代码仓库的 **观察者**
+3.  将 polardb-tianchi (polardbtianchi) 用户添加为参赛代码仓库的 **观察者**
     
 ![plot](./img/fork-004.png)
 
@@ -32,11 +32,27 @@
     
 ![plot](./img/commit-003.png)
 
+## 本地自测流程
+
+本地自测流程详见`test/`本地自测目录下的 README 文件，大致流程如下：
+
+1. 初始化测试环境并下载数据集
+
+2. 拉取开发镜像并运行容器
+
+3. 编译并配置数据库
+
+4. 插入数据并建立索引
+
+5. 运行基准测试
+
 ## 目录结构
 
 *   `ROUND1/`天池数据库大赛初赛相关资料
     
-*   `polardb/`PolarDB-for-PostgreSQL 代码，基于 [ApsaraDB/PolarDB-for-PostgreSQL at polardb-competition-2025](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/polardb-competition-2025)
+*   `polardb/`PolarDB-for-PostgreSQL 代码，基于 [ApsaraDB/PolarDB-for-PostgreSQL at polardb-competition-2025](https://github.com/ApsaraDB/PolarDB-for-PostgreSQL/tree/polardb-competition-2025)
+
+*   `test/`本地自测目录，选手可以进入该目录进行本地测试
     
 
 ## 注意事项
