@@ -41,12 +41,12 @@ def worker_process(task_queue, batch_size, tablename):
         host=HOST, 
         port=PORT)
     
-    conn.autocommit = True  # 每个进程独立提交
+    conn.autocommit = True
     cursor = conn.cursor()
     
     while True:
         start_id, end_id, chunk = task_queue.get()
-        if start_id is None:  # 结束信号
+        if start_id is None:
             task_queue.task_done()
             break
             
@@ -65,7 +65,7 @@ def worker_process(task_queue, batch_size, tablename):
         except Exception as e:
             print(f"Error in worker: {e}")
         finally:
-            task_queue.task_done()  # 标记当前任务完成
+            task_queue.task_done()
     
     cursor.execute("select count(*) from " + tablename)
     result = cursor.fetchall()

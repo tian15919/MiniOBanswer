@@ -1,8 +1,9 @@
 import argparse
+import atexit
 import numpy as np
 import struct
 import multiprocessing
-import psycopg2
+from psycopg2 import pool
 from functools import partial
 from psycopg2.extras import execute_values
 import time
@@ -28,7 +29,6 @@ def parse_arguments():
     parser.add_argument('--max_vid', type=int, default=100000000, help='max vid')
     parser.add_argument('--workers', type=int, default=8, help='worker num')
     
-    # index search parameters
     parser.add_argument('--pgvector_hnsw_ef_search', type=int, default=0, help='hnsw_ef_search')
     parser.add_argument('--pgvector_ivf_probes', type=int, default=0, help='pgvector_ivf_probes')
 
@@ -37,15 +37,29 @@ def parse_arguments():
     
     return parser.parse_args()
 
-def get_db_connection(args):
-    
-    return psycopg2.connect(
+# 创建连接池
+connection_pool = None
+
+def close_worker_connection_pool():
+    global connection_pool
+    if connection_pool:
+        connection_pool.closeall()
+        
+def init_worker_connection_pool(args):
+    """在子进程里初始化自己的连接池"""
+    global connection_pool
+    connection_pool = pool.SimpleConnectionPool(
+        minconn=1,
+        maxconn=2,
         host=args.host,
         port=args.port,
         dbname=args.database,
         user=args.user,
         password=args.password
     )
+    
+    # 注册进程退出时关闭连接池
+    atexit.register(close_worker_connection_pool)
 
 def get_distance_operator(metric):
     
@@ -66,8 +80,6 @@ def write_logs(results, log_name):
             file.write('--------------------------\n')
             
 def set_local_search_parameters(cur, args):
-    # cur.execute("SET effective_io_concurrency = 200;")
-    # cur.execute("SET jit = off;")
     
     if args.pgvector_hnsw_ef_search != 0:
         cur.execute(f"SET hnsw.ef_search = {args.pgvector_hnsw_ef_search}")
@@ -101,7 +113,6 @@ def cal_avg_recall(results, ground_truth, k, max_vid):
                 if((gt_vid+1) in query_vid):
                     match_num += 1
         recall = match_num / min(k, compare_num)
-        # print(f"[INFO] recall: {recall}, ground_truth_of_query_idx: {ground_truth_of_query_idx[:k]}, query_vid: {query_vid}")
         avg_recall += recall
 
     avg_recall = avg_recall / query_num
@@ -126,9 +137,8 @@ def cal_latency_distribution(results):
     print(f'avg latency is: {avg_latency:.3f}ms')
 
 def worker_func(args, query_data):
-
     query, query_idx = query_data
-    conn = get_db_connection(args)
+    conn = connection_pool.getconn()
     conn.autocommit = True
     
     operator = get_distance_operator(args.metric)
@@ -166,7 +176,6 @@ def worker_func(args, query_data):
                 'metric': args.metric,
                 'plan': execution_plan
             }
-
             
     except Exception as e:
         result = {
@@ -176,18 +185,22 @@ def worker_func(args, query_data):
             'latency': 0,
             'plan': execution_plan
         }
+        conn.rollback()
     finally:
-        conn.close()
+        cur.close()
+        connection_pool.putconn(conn)
     
     return result
 
 def query_database(args, queries):
-    # 查询解码
     query_data = [(query, idx) for idx, query in enumerate(queries)]
-    
-    # 数据查询
     num_workers = args.workers
-    with multiprocessing.Pool(num_workers) as pool:
+    
+    with multiprocessing.Pool(
+        num_workers,
+        initializer=init_worker_connection_pool,
+        initargs=(args,)
+    ) as pool:
         worker = partial(worker_func, args)
         results = pool.map(worker, query_data)
     
@@ -234,6 +247,13 @@ if __name__ == "__main__":
     results = query_database(args, queries)
     end = time.time()
     
+    # 异常报错
+    for res in results:
+        error = res.get('error')
+        if error:
+            print(f"[ERROR] query error: {error}")
+            exit(1)
+    
     # 计算执行时间与 QPS
     execute_time = end - start
     QPS = len(queries) / execute_time
@@ -246,3 +266,4 @@ if __name__ == "__main__":
         cal_latency_distribution(results)
         avg_recall = cal_avg_recall(results, ground_truth, args.k, args.max_vid)
         print(f"avg recall@{args.k} of {len(queries)} queries is: {avg_recall:.6f}")
+        
