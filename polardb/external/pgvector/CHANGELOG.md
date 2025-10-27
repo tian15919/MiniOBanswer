@@ -1,3 +1,58 @@
+## 0.8.2 (unreleased)
+
+- Fixed `Index Searches` in `EXPLAIN` output for Postgres 18
+
+## 0.8.1 (2025-09-04)
+
+- Added support for Postgres 18 rc1
+- Improved performance of `binary_quantize` function
+
+## 0.8.0 (2024-10-30)
+
+- Added support for iterative index scans
+- Added casts for arrays to `sparsevec`
+- Improved cost estimation for better index selection when filtering
+- Improved performance of HNSW index scans
+- Improved performance of HNSW inserts and on-disk index builds
+- Dropped support for Postgres 12
+
+## 0.7.4 (2024-08-05)
+
+- Fixed locking for parallel HNSW index builds
+- Fixed compilation error with GCC 14 on i386 when SSE2 is not enabled
+
+## 0.7.3 (2024-07-22)
+
+- Fixed `failed to add index item` error with `sparsevec`
+- Fixed compilation error with FreeBSD ARM
+- Fixed compilation warning with MSVC and Postgres 16
+
+## 0.7.2 (2024-06-11)
+
+- Fixed initialization fork for indexes on unlogged tables
+
+## 0.7.1 (2024-06-03)
+
+- Improved performance of on-disk HNSW index builds
+- Fixed `undefined symbol` error with GCC 8
+- Fixed compilation error with universal binaries on Mac
+- Fixed compilation warning with Clang < 14
+
+## 0.7.0 (2024-04-29)
+
+- Added `halfvec` type
+- Added `sparsevec` type
+- Added support for indexing `bit` type
+- Added support for indexing L1 distance with HNSW
+- Added `binary_quantize` function
+- Added `hamming_distance` function
+- Added `jaccard_distance` function
+- Added `l2_normalize` function
+- Added `subvector` function
+- Added concatenate operator for vectors
+- Added CPU dispatching for distance functions on Linux x86-64
+- Updated comparison operators to support vectors with different dimensions
+
 ## 0.6.2 (2024-03-18)
 
 - Reduced lock contention with parallel HNSW index builds

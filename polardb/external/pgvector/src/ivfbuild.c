@@ -6,27 +6,28 @@
 #include "access/tableam.h"
 #include "access/parallel.h"
 #include "access/xact.h"
+#include "bitvec.h"
 #include "catalog/index.h"
 #include "catalog/pg_operator_d.h"
 #include "catalog/pg_type_d.h"
 #include "commands/progress.h"
+#include "halfvec.h"
 #include "ivfflat.h"
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/memutils.h"
+#include "vector.h"
+
+#if PG_VERSION_NUM >= 160000
+#include "varatt.h"
+#endif
 
 #if PG_VERSION_NUM >= 140000
 #include "utils/backend_progress.h"
 #else
 #include "pgstat.h"
-#endif
-
-#if PG_VERSION_NUM >= 130000
-#define CALLBACK_ITEM_POINTER ItemPointer tid
-#else
-#define CALLBACK_ITEM_POINTER HeapTuple hup
 #endif
 
 #if PG_VERSION_NUM >= 140000
@@ -57,13 +58,15 @@ AddSample(Datum *values, IvfflatBuildState * buildstate)
 	 */
 	if (buildstate->kmeansnormprocinfo != NULL)
 	{
-		if (!IvfflatNormValue(buildstate->kmeansnormprocinfo, buildstate->collation, &value, buildstate->normvec))
+		if (!IvfflatCheckNorm(buildstate->kmeansnormprocinfo, buildstate->collation, value))
 			return;
+
+		value = IvfflatNormValue(buildstate->typeInfo, buildstate->collation, value);
 	}
 
 	if (samples->length < targsamples)
 	{
-		VectorArraySet(samples, samples->length, DatumGetVector(value));
+		VectorArraySet(samples, samples->length, DatumGetPointer(value));
 		samples->length++;
 	}
 	else
@@ -80,7 +83,7 @@ AddSample(Datum *values, IvfflatBuildState * buildstate)
 #endif
 
 			Assert(k >= 0 && k < targsamples);
-			VectorArraySet(samples, k, DatumGetVector(value));
+			VectorArraySet(samples, k, DatumGetPointer(value));
 		}
 
 		buildstate->rowstoskip -= 1;
@@ -91,7 +94,7 @@ AddSample(Datum *values, IvfflatBuildState * buildstate)
  * Callback for sampling
  */
 static void
-SampleCallback(Relation index, CALLBACK_ITEM_POINTER, Datum *values,
+SampleCallback(Relation index, ItemPointer tid, Datum *values,
 			   bool *isnull, bool tupleIsAlive, void *state)
 {
 	IvfflatBuildState *buildstate = (IvfflatBuildState *) state;
@@ -105,7 +108,7 @@ SampleCallback(Relation index, CALLBACK_ITEM_POINTER, Datum *values,
 	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
 
 	/* Add sample */
-	AddSample(values, state);
+	AddSample(values, buildstate);
 
 	/* Reset memory context */
 	MemoryContextSwitchTo(oldCtx);
@@ -139,7 +142,7 @@ SampleRows(IvfflatBuildState * buildstate)
  * Add tuple to sort
  */
 static void
-AddTupleToSort(Relation index, ItemPointer tid, Datum *values, IvfflatBuildState * buildstate)
+AddTupleToSort(ItemPointer tid, Datum *values, IvfflatBuildState * buildstate)
 {
 	double		distance;
 	double		minDistance = DBL_MAX;
@@ -153,8 +156,10 @@ AddTupleToSort(Relation index, ItemPointer tid, Datum *values, IvfflatBuildState
 	/* Normalize if needed */
 	if (buildstate->normprocinfo != NULL)
 	{
-		if (!IvfflatNormValue(buildstate->normprocinfo, buildstate->collation, &value, buildstate->normvec))
+		if (!IvfflatCheckNorm(buildstate->normprocinfo, buildstate->collation, value))
 			return;
+
+		value = IvfflatNormValue(buildstate->typeInfo, buildstate->collation, value);
 	}
 
 	/* Find the list that minimizes the distance */
@@ -200,15 +205,11 @@ AddTupleToSort(Relation index, ItemPointer tid, Datum *values, IvfflatBuildState
  * Callback for table_index_build_scan
  */
 static void
-BuildCallback(Relation index, CALLBACK_ITEM_POINTER, Datum *values,
+BuildCallback(Relation index, ItemPointer tid, Datum *values,
 			  bool *isnull, bool tupleIsAlive, void *state)
 {
 	IvfflatBuildState *buildstate = (IvfflatBuildState *) state;
 	MemoryContext oldCtx;
-
-#if PG_VERSION_NUM < 130000
-	ItemPointer tid = &hup->t_self;
-#endif
 
 	/* Skip nulls */
 	if (isnull[0])
@@ -218,7 +219,7 @@ BuildCallback(Relation index, CALLBACK_ITEM_POINTER, Datum *values,
 	oldCtx = MemoryContextSwitchTo(buildstate->tmpCtx);
 
 	/* Add tuple to sort */
-	AddTupleToSort(index, tid, values, buildstate);
+	AddTupleToSort(tid, values, buildstate);
 
 	/* Reset memory context */
 	MemoryContextSwitchTo(oldCtx);
@@ -231,11 +232,11 @@ BuildCallback(Relation index, CALLBACK_ITEM_POINTER, Datum *values,
 static inline void
 GetNextTuple(Tuplesortstate *sortstate, TupleDesc tupdesc, TupleTableSlot *slot, IndexTuple *itup, int *list)
 {
-	Datum		value;
-	bool		isnull;
-
 	if (tuplesort_gettupleslot(sortstate, true, false, slot, NULL))
 	{
+		Datum		value;
+		bool		isnull;
+
 		*list = DatumGetInt32(slot_getattr(slot, 1, &isnull));
 		value = slot_getattr(slot, 3, &isnull);
 
@@ -257,8 +258,8 @@ InsertTuples(Relation index, IvfflatBuildState * buildstate, ForkNumber forkNum)
 	IndexTuple	itup = NULL;	/* silence compiler warning */
 	int64		inserted = 0;
 
-	TupleTableSlot *slot = MakeSingleTupleTableSlot(buildstate->tupdesc, &TTSOpsMinimalTuple);
-	TupleDesc	tupdesc = RelationGetDescr(index);
+	TupleTableSlot *slot = MakeSingleTupleTableSlot(buildstate->sortdesc, &TTSOpsMinimalTuple);
+	TupleDesc	tupdesc = buildstate->tupdesc;
 
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_IVFFLAT_PHASE_LOAD);
 
@@ -321,16 +322,28 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 	buildstate->heap = heap;
 	buildstate->index = index;
 	buildstate->indexInfo = indexInfo;
+	buildstate->typeInfo = IvfflatGetTypeInfo(index);
+	buildstate->tupdesc = RelationGetDescr(index);
 
 	buildstate->lists = IvfflatGetLists(index);
 	buildstate->dimensions = TupleDescAttr(index->rd_att, 0)->atttypmod;
 
+	/* Disallow varbit since require fixed dimensions */
+	if (TupleDescAttr(index->rd_att, 0)->atttypid == VARBITOID)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("type not supported for ivfflat index")));
+
 	/* Require column to have dimensions to be indexed */
 	if (buildstate->dimensions < 0)
-		elog(ERROR, "column does not have dimensions");
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("column does not have dimensions")));
 
-	if (buildstate->dimensions > IVFFLAT_MAX_DIM)
-		elog(ERROR, "column cannot have more than %d dimensions for ivfflat index", IVFFLAT_MAX_DIM);
+	if (buildstate->dimensions > buildstate->typeInfo->maxDimensions)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("column cannot have more than %d dimensions for ivfflat index", buildstate->typeInfo->maxDimensions)));
 
 	buildstate->reltuples = 0;
 	buildstate->indtuples = 0;
@@ -343,21 +356,20 @@ InitBuildState(IvfflatBuildState * buildstate, Relation heap, Relation index, In
 
 	/* Require more than one dimension for spherical k-means */
 	if (buildstate->kmeansnormprocinfo != NULL && buildstate->dimensions == 1)
-		elog(ERROR, "dimensions must be greater than one for this opclass");
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("dimensions must be greater than one for this opclass")));
 
 	/* Create tuple description for sorting */
-	buildstate->tupdesc = CreateTemplateTupleDesc(3);
-	TupleDescInitEntry(buildstate->tupdesc, (AttrNumber) 1, "list", INT4OID, -1, 0);
-	TupleDescInitEntry(buildstate->tupdesc, (AttrNumber) 2, "tid", TIDOID, -1, 0);
-	TupleDescInitEntry(buildstate->tupdesc, (AttrNumber) 3, "vector", RelationGetDescr(index)->attrs[0].atttypid, -1, 0);
+	buildstate->sortdesc = CreateTemplateTupleDesc(3);
+	TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 1, "list", INT4OID, -1, 0);
+	TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 2, "tid", TIDOID, -1, 0);
+	TupleDescInitEntry(buildstate->sortdesc, (AttrNumber) 3, "vector", TupleDescAttr(buildstate->tupdesc, 0)->atttypid, -1, 0);
 
-	buildstate->slot = MakeSingleTupleTableSlot(buildstate->tupdesc, &TTSOpsVirtual);
+	buildstate->slot = MakeSingleTupleTableSlot(buildstate->sortdesc, &TTSOpsVirtual);
 
-	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions);
+	buildstate->centers = VectorArrayInit(buildstate->lists, buildstate->dimensions, buildstate->typeInfo->itemSize(buildstate->dimensions));
 	buildstate->listInfo = palloc(sizeof(ListInfo) * buildstate->lists);
-
-	/* Reuse for each tuple */
-	buildstate->normvec = InitVector(buildstate->dimensions);
 
 	buildstate->tmpCtx = AllocSetContextCreate(CurrentMemoryContext,
 											   "Ivfflat build temporary context",
@@ -380,7 +392,6 @@ FreeBuildState(IvfflatBuildState * buildstate)
 {
 	VectorArrayFree(buildstate->centers);
 	pfree(buildstate->listInfo);
-	pfree(buildstate->normvec);
 
 #ifdef IVFFLAT_KMEANS_DEBUG
 	pfree(buildstate->listSums);
@@ -412,7 +423,7 @@ ComputeCenters(IvfflatBuildState * buildstate)
 
 	/* Sample rows */
 	/* TODO Ensure within maintenance_work_mem */
-	buildstate->samples = VectorArrayInit(numSamples, buildstate->dimensions);
+	buildstate->samples = VectorArrayInit(numSamples, buildstate->dimensions, buildstate->centers->itemsize);
 	if (buildstate->heap != NULL)
 	{
 		SampleRows(buildstate);
@@ -427,7 +438,7 @@ ComputeCenters(IvfflatBuildState * buildstate)
 	}
 
 	/* Calculate centers */
-	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers));
+	IvfflatBench("k-means", IvfflatKmeans(buildstate->index, buildstate->samples, buildstate->centers, buildstate->typeInfo));
 
 	/* Free samples before we allocate more memory */
 	VectorArrayFree(buildstate->samples);
@@ -463,8 +474,8 @@ CreateMetaPage(Relation index, int dimensions, int lists, ForkNumber forkNum)
  * Create list pages
  */
 static void
-CreateListPages(Relation index, VectorArray centers, int dimensions,
-				int lists, ForkNumber forkNum, ListInfo * *listInfo)
+CreateListPages(Relation index, VectorArray centers, int lists,
+				ForkNumber forkNum, ListInfo * *listInfo)
 {
 	Buffer		buf;
 	Page		page;
@@ -472,7 +483,7 @@ CreateListPages(Relation index, VectorArray centers, int dimensions,
 	Size		listSize;
 	IvfflatList list;
 
-	listSize = MAXALIGN(IVFFLAT_LIST_SIZE(dimensions));
+	listSize = MAXALIGN(IVFFLAT_LIST_SIZE(centers->itemsize));
 	list = palloc0(listSize);
 
 	buf = IvfflatNewBuffer(index, forkNum);
@@ -482,10 +493,13 @@ CreateListPages(Relation index, VectorArray centers, int dimensions,
 	{
 		OffsetNumber offno;
 
+		/* Zero memory for each list */
+		MemSet(list, 0, listSize);
+
 		/* Load list */
 		list->startPage = InvalidBlockNumber;
 		list->insertPage = InvalidBlockNumber;
-		memcpy(&list->center, VectorArrayGet(centers, i), VECTOR_SIZE(dimensions));
+		memcpy(&list->center, VectorArrayGet(centers, i), VARSIZE_ANY(VectorArrayGet(centers, i)));
 
 		/* Ensure free space */
 		if (PageGetFreeSpace(page) < listSize)
@@ -552,6 +566,20 @@ PrintKmeansMetrics(IvfflatBuildState * buildstate)
 #endif
 
 /*
+ * Initialize build sort state
+ */
+static Tuplesortstate *
+InitBuildSortState(TupleDesc tupdesc, int memory, SortCoordinate coordinate)
+{
+	AttrNumber	attNums[] = {1};
+	Oid			sortOperators[] = {Int4LessOperator};
+	Oid			sortCollations[] = {InvalidOid};
+	bool		nullsFirstFlags[] = {false};
+
+	return tuplesort_begin_heap(tupdesc, 1, attNums, sortOperators, sortCollations, nullsFirstFlags, memory, coordinate, false);
+}
+
+/*
  * Within leader, wait for end of heap scan
  */
 static double
@@ -590,19 +618,13 @@ ParallelHeapScan(IvfflatBuildState * buildstate)
  * Perform a worker's portion of a parallel sort
  */
 static void
-IvfflatParallelScanAndSort(IvfflatSpool * ivfspool, IvfflatShared * ivfshared, Sharedsort *sharedsort, Vector * ivfcenters, int sortmem, bool progress)
+IvfflatParallelScanAndSort(IvfflatSpool * ivfspool, IvfflatShared * ivfshared, Sharedsort *sharedsort, char *ivfcenters, int sortmem, bool progress)
 {
 	SortCoordinate coordinate;
 	IvfflatBuildState buildstate;
 	TableScanDesc scan;
 	double		reltuples;
 	IndexInfo  *indexInfo;
-
-	/* Sort options, which must match AssignTuples */
-	AttrNumber	attNums[] = {1};
-	Oid			sortOperators[] = {Int4LessOperator};
-	Oid			sortCollations[] = {InvalidOid};
-	bool		nullsFirstFlags[] = {false};
 
 	/* Initialize local tuplesort coordination state */
 	coordinate = palloc0(sizeof(SortCoordinateData));
@@ -614,9 +636,9 @@ IvfflatParallelScanAndSort(IvfflatSpool * ivfspool, IvfflatShared * ivfshared, S
 	indexInfo = BuildIndexInfo(ivfspool->index);
 	indexInfo->ii_Concurrent = ivfshared->isconcurrent;
 	InitBuildState(&buildstate, ivfspool->heap, ivfspool->index, indexInfo);
-	memcpy(buildstate.centers->items, ivfcenters, VECTOR_SIZE(buildstate.centers->dim) * buildstate.centers->maxlen);
+	memcpy(buildstate.centers->items, ivfcenters, buildstate.centers->itemsize * buildstate.centers->maxlen);
 	buildstate.centers->length = buildstate.centers->maxlen;
-	ivfspool->sortstate = tuplesort_begin_heap(buildstate.tupdesc, 1, attNums, sortOperators, sortCollations, nullsFirstFlags, sortmem, coordinate, false);
+	ivfspool->sortstate = InitBuildSortState(buildstate.sortdesc, sortmem, coordinate);
 	buildstate.sortstate = ivfspool->sortstate;
 	scan = table_beginscan_parallel(ivfspool->heap,
 									ParallelTableScanFromIvfflatShared(ivfshared));
@@ -662,7 +684,7 @@ IvfflatParallelBuildMain(dsm_segment *seg, shm_toc *toc)
 	IvfflatSpool *ivfspool;
 	IvfflatShared *ivfshared;
 	Sharedsort *sharedsort;
-	Vector	   *ivfcenters;
+	char	   *ivfcenters;
 	Relation	heapRel;
 	Relation	indexRel;
 	LOCKMODE	heapLockmode;
@@ -776,7 +798,7 @@ IvfflatBeginParallel(IvfflatBuildState * buildstate, bool isconcurrent, int requ
 	Size		estcenters;
 	IvfflatShared *ivfshared;
 	Sharedsort *sharedsort;
-	Vector	   *ivfcenters;
+	char	   *ivfcenters;
 	IvfflatLeader *ivfleader = (IvfflatLeader *) palloc0(sizeof(IvfflatLeader));
 	bool		leaderparticipates = true;
 	int			querylen;
@@ -803,7 +825,7 @@ IvfflatBeginParallel(IvfflatBuildState * buildstate, bool isconcurrent, int requ
 	shm_toc_estimate_chunk(&pcxt->estimator, estivfshared);
 	estsort = tuplesort_estimate_shared(scantuplesortstates);
 	shm_toc_estimate_chunk(&pcxt->estimator, estsort);
-	estcenters = VECTOR_SIZE(buildstate->dimensions) * buildstate->lists;
+	estcenters = buildstate->centers->itemsize * buildstate->centers->maxlen;
 	shm_toc_estimate_chunk(&pcxt->estimator, estcenters);
 	shm_toc_estimate_keys(&pcxt->estimator, 3);
 
@@ -855,7 +877,7 @@ IvfflatBeginParallel(IvfflatBuildState * buildstate, bool isconcurrent, int requ
 	tuplesort_initialize_shared(sharedsort, scantuplesortstates,
 								pcxt->seg);
 
-	ivfcenters = (Vector *) shm_toc_allocate(pcxt->toc, estcenters);
+	ivfcenters = shm_toc_allocate(pcxt->toc, estcenters);
 	memcpy(ivfcenters, buildstate->centers->items, estcenters);
 
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_IVFFLAT_SHARED, ivfshared);
@@ -913,12 +935,6 @@ AssignTuples(IvfflatBuildState * buildstate)
 	int			parallel_workers = 0;
 	SortCoordinate coordinate = NULL;
 
-	/* Sort options, which must match IvfflatParallelScanAndSort */
-	AttrNumber	attNums[] = {1};
-	Oid			sortOperators[] = {Int4LessOperator};
-	Oid			sortCollations[] = {InvalidOid};
-	bool		nullsFirstFlags[] = {false};
-
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_SUBPHASE, PROGRESS_IVFFLAT_PHASE_ASSIGN);
 
 	/* Calculate parallel workers */
@@ -939,7 +955,7 @@ AssignTuples(IvfflatBuildState * buildstate)
 	}
 
 	/* Begin serial/leader tuplesort */
-	buildstate->sortstate = tuplesort_begin_heap(buildstate->tupdesc, 1, attNums, sortOperators, sortCollations, nullsFirstFlags, maintenance_work_mem, coordinate, false);
+	buildstate->sortstate = InitBuildSortState(buildstate->sortdesc, maintenance_work_mem, coordinate);
 
 	/* Add tuples to sort */
 	if (buildstate->heap != NULL)
@@ -992,8 +1008,12 @@ BuildIndex(Relation heap, Relation index, IndexInfo *indexInfo,
 
 	/* Create pages */
 	CreateMetaPage(index, buildstate->dimensions, buildstate->lists, forkNum);
-	CreateListPages(index, buildstate->centers, buildstate->dimensions, buildstate->lists, forkNum, &buildstate->listInfo);
+	CreateListPages(index, buildstate->centers, buildstate->lists, forkNum, &buildstate->listInfo);
 	CreateEntryPages(buildstate, forkNum);
+
+	/* Write WAL for initialization fork since GenericXLog functions do not */
+	if (forkNum == INIT_FORKNUM)
+		log_newpage_range(index, forkNum, 0, RelationGetNumberOfBlocksInFork(index, forkNum), true);
 
 	FreeBuildState(buildstate);
 }
@@ -1006,6 +1026,10 @@ ivfflatbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 {
 	IndexBuildResult *result;
 	IvfflatBuildState buildstate;
+
+#ifdef IVFFLAT_BENCH
+	SeedRandom(42);
+#endif
 
 	BuildIndex(heap, index, indexInfo, &buildstate, MAIN_FORKNUM);
 
