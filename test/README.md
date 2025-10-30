@@ -64,6 +64,8 @@
     ```bash
     # 设置共享内存大小, 需要大于maintenance_work_mem
     SHM_SIZE=8g
+    # $BASE_DIR为项目根目录
+    cd $BASE_DIR
     # 进入项目根目录后运行容器
     docker run -it -p 5432:5432 \
         -v $PWD:/home/postgres/polardb_competition_2025 \
