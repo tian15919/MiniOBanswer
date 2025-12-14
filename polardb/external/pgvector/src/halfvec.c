@@ -18,6 +18,7 @@
 #include "utils/lsyscache.h"
 #include "utils/numeric.h"
 #include "vector.h"
+#include "unit8vec.h"
 
 #define STATE_DIMS(x) (ARR_DIMS(x)[0] - 1)
 #define CreateStateDatums(dim) palloc(sizeof(Datum) * (dim + 1))
@@ -1198,5 +1199,63 @@ sparsevec_to_halfvec(PG_FUNCTION_ARGS)
 	for (int i = 0; i < svec->nnz; i++)
 		result->x[svec->indices[i]] = Float4ToHalf(values[i]);
 
+	PG_RETURN_POINTER(result);
+}
+
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(halfvec_compress_to_uint8);
+Datum
+halfvec_compress_to_uint8(PG_FUNCTION_ARGS)
+{
+	HalfVector *vec = PG_GETARG_HALFVEC_P(0);
+	float		min_val, max_val;
+	Uint8Vector *compressed;
+	ArrayType  *result;
+	Datum		elements[3];
+	
+	/* Find min and max for quantization */
+	find_min_max_halfvec(vec, &min_val, &max_val);
+	
+	/* Compress to uint8 */
+	compressed = halfvec_to_uint8vec(vec, min_val, max_val);
+	
+	/* Return array of [min, max, compressed_vector] */
+	elements[0] = Float4GetDatum(min_val);
+	elements[1] = Float4GetDatum(max_val);
+	elements[2] = PointerGetDatum(compressed);
+	
+	result = construct_array(elements, 3, FLOAT4OID, 
+							sizeof(float4), true, TYPALIGN_INT);
+	
+	PG_RETURN_ARRAYTYPE_P(result);
+}
+
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(uint8_decompress_to_halfvec);
+Datum
+uint8_decompress_to_halfvec(PG_FUNCTION_ARGS)
+{
+	ArrayType  *compressed_array = PG_GETARG_ARRAYTYPE_P(0);
+	Datum	   *elements;
+	bool	   *nulls;
+	int			nelements;
+	HalfVector *result;
+	float		min_val, max_val;
+	Uint8Vector *uint8vec;
+	
+	deconstruct_array(compressed_array, FLOAT4OID, 
+					 sizeof(float4), true, 'i',
+					 &elements, &nulls, &nelements);
+	
+	if (nelements != 3)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATA_EXCEPTION),
+				 errmsg("compressed array must have 3 elements")));
+	
+	min_val = DatumGetFloat4(elements[0]);
+	max_val = DatumGetFloat4(elements[1]);
+	uint8vec = DatumGetUint8Vector(elements[2]);
+	
+	/* Decompress */
+	result = uint8vec_to_halfvec(uint8vec, min_val, max_val);
+	
 	PG_RETURN_POINTER(result);
 }

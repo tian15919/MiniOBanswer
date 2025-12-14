@@ -67,4 +67,8 @@ typedef struct HalfVector
 
 HalfVector *InitHalfVector(int dim);
 
+// 在 halfvec.h 末尾添加
+Uint8Vector *halfvec_compress_to_uint8(HalfVector *vec);
+HalfVector *uint8_decompress_to_halfvec(Uint8Vector *uint8vec, float min_val, float max_val);
+
 #endif

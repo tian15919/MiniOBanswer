@@ -52,6 +52,7 @@ _PG_init(void)
 	HalfvecInit();
 	HnswInit();
 	IvfflatInit();
+	Uint8vecInit();
 }
 
 /*
